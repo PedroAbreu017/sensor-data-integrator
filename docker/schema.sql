@@ -4,28 +4,28 @@ CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 -- Industry
 CREATE TABLE IF NOT EXISTS industry (
-    id   SERIAL PRIMARY KEY,
+    id   BIGSERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL
 );
 
 -- Operation Status
 CREATE TABLE IF NOT EXISTS operation_status (
-    id   SERIAL PRIMARY KEY,
+    id   BIGSERIAL PRIMARY KEY,
     name VARCHAR(50) NOT NULL
 );
 
 -- Asset
 CREATE TABLE IF NOT EXISTS asset (
-    id                  SERIAL PRIMARY KEY,
+    id                  BIGSERIAL PRIMARY KEY,
     name                VARCHAR(100) NOT NULL,
-    industry_id         INTEGER REFERENCES industry(id),
+    industry_id         BIGINT REFERENCES industry(id),
     state               VARCHAR(50),
-    operation_status_id INTEGER REFERENCES operation_status(id)
+    operation_status_id BIGINt REFERENCES operation_status(id)
 );
 
 -- Location
 CREATE TABLE IF NOT EXISTS location (
-    id             SERIAL PRIMARY KEY,
+    id             BIGSERIAL PRIMARY KEY,
     macro_location VARCHAR(100),
     micro_location VARCHAR(100),
     location_2     VARCHAR(100)
@@ -33,22 +33,22 @@ CREATE TABLE IF NOT EXISTS location (
 
 -- Equipment
 CREATE TABLE IF NOT EXISTS equipment (
-    id          SERIAL PRIMARY KEY,
+    id          BIGSERIAL PRIMARY KEY,
     name        VARCHAR(100) NOT NULL,
     code        VARCHAR(100),
-    asset_id    INTEGER REFERENCES asset(id),
-    location_id INTEGER REFERENCES location(id)
+    asset_id    BIGINT REFERENCES asset(id),
+    location_id BIGINT REFERENCES location(id)
 );
 
 -- Tag
 CREATE TABLE IF NOT EXISTS tag (
-    id           SERIAL PRIMARY KEY,
+    id           BIGSERIAL PRIMARY KEY,
     name         VARCHAR(100) NOT NULL,
     description  VARCHAR(255),
     signal_label VARCHAR(100) NOT NULL,
     type         VARCHAR(50),
     unit         VARCHAR(50),
-    equipment_id INTEGER REFERENCES equipment(id),
+    equipment_id BIGINT REFERENCES equipment(id),
     UNIQUE (name)
 );
 
@@ -57,9 +57,9 @@ CREATE TABLE IF NOT EXISTS sensor_readings (
     id           BIGSERIAL,
     timestamp    TIMESTAMPTZ NOT NULL,
     value        DOUBLE PRECISION NOT NULL,
-    asset_id     INTEGER REFERENCES asset(id),
-    equipment_id INTEGER REFERENCES equipment(id),
-    tag_id       INTEGER REFERENCES tag(id),
+    asset_id     BIGINT REFERENCES asset(id),
+    equipment_id BIGINT REFERENCES equipment(id),
+    tag_id       BIGINT REFERENCES tag(id),
     quality      VARCHAR(50),
     PRIMARY KEY (id, timestamp)
 );

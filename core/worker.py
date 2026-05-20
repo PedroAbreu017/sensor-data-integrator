@@ -5,7 +5,7 @@ from pathlib import Path
 
 from api.models import JobStatus
 from api.routers.upload import update_job
-from core.message_broker import consume, QUEUES
+from core.message_broker import consume, publish, QUEUES
 
 logger = logging.getLogger("integrator.worker")
 
@@ -33,6 +33,26 @@ async def process_upload(message: dict):
         status = JobStatus.DONE if not result.errors else JobStatus.FAILED
         update_job(job_id, status, result)
         logger.info(f"[worker] ✅ Job {job_id} finished — status={status.value}")
+
+        # Publish quality event
+        healthy = result.records_processed - len(result.errors)
+        spikes = sum(1 for e in result.errors if "spike" in e.reason.lower())
+        frozen = sum(1 for e in result.errors if "frozen" in e.reason.lower())
+        duplicates = sum(1 for e in result.errors if "duplicate" in e.reason.lower())
+        outliers = len(result.errors) - spikes - frozen - duplicates
+
+        await publish(QUEUES["quality.events"], {
+            "job_id": job_id,
+            "tenant": tenant,
+            "filename": file_path.name,
+            "records_processed": result.records_processed,
+            "records_healthy": healthy,
+            "records_outlier": outliers,
+            "records_spike": spikes,
+            "records_frozen": frozen,
+            "records_duplicate": duplicates,
+        })
+        logger.info(f"[worker] 📊 Quality event published for job {job_id}")
 
     except Exception as e:
         logger.error(f"[worker] ✗ Job {job_id} failed: {e}", exc_info=True)
