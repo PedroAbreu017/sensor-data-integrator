@@ -1,0 +1,114 @@
+import uuid
+import logging
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict
+
+from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException
+
+from api.config import get_settings
+from api.models import TenantEnum, UploadResponse, JobStatus
+
+logger = logging.getLogger("integrator.router")
+
+_jobs: Dict[str, UploadResponse] = {}
+
+_allowed_ext = {
+    TenantEnum.ORION: {".csv", ".txt", ".xlsx"},
+    TenantEnum.NEXUS: {".csv"},
+    TenantEnum.ATLAS: {".csv", ".xlsx"},
+}
+
+upload_router = APIRouter(prefix="/upload", tags=["integration"])
+jobs_router = APIRouter(prefix="/jobs", tags=["monitoring"])
+
+
+def _run_processing(job_id: str, tenant: TenantEnum, file_path: Path):
+    try:
+        _jobs[job_id].status = JobStatus.RUNNING
+
+        if tenant == TenantEnum.ORION:
+            from api.services.orion_service import OrionService
+            service = OrionService()
+        elif tenant == TenantEnum.NEXUS:
+            from api.services.nexus_service import NexusService
+            service = NexusService()
+        else:
+            from api.services.atlas_service import AtlasService
+            service = AtlasService()
+
+        result = service.process_file(file_path)
+        _jobs[job_id].status = JobStatus.DONE if not result.errors else JobStatus.FAILED
+        _jobs[job_id].result = result
+
+    except Exception as e:
+        logger.error(f"[{job_id}] Fatal error: {e}", exc_info=True)
+        _jobs[job_id].status = JobStatus.FAILED
+    finally:
+        shutil.rmtree(file_path.parent, ignore_errors=True)
+
+
+@upload_router.post("", response_model=UploadResponse, status_code=202)
+async def upload_file(
+    background_tasks: BackgroundTasks,
+    tenant: TenantEnum = Form(...),
+    file: UploadFile = File(...),
+):
+    settings = get_settings()
+
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in _allowed_ext[tenant]:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Tenant {tenant} accepts: {_allowed_ext[tenant]}. Received: '{suffix}'",
+        )
+
+    contents = await file.read()
+    size_mb = len(contents) / (1024 * 1024)
+    if size_mb > settings.max_upload_size_mb:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File {size_mb:.1f}MB exceeds limit of {settings.max_upload_size_mb}MB",
+        )
+
+    job_id = str(uuid.uuid4())
+    job_dir = Path(settings.temp_dir) / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    file_path = job_dir / Path(file.filename).name
+
+    with open(file_path, "wb") as f:
+        f.write(contents)
+
+    logger.info(f"[{job_id}] Received: {file.filename} ({size_mb:.2f}MB) tenant={tenant}")
+
+    response = UploadResponse(
+        job_id=job_id,
+        tenant=tenant,
+        environment=settings.app_env.value,
+        status=JobStatus.PENDING,
+        message=f"'{file.filename}' received. Processing in background.",
+        submitted_at=datetime.now(timezone.utc),
+    )
+    _jobs[job_id] = response
+    background_tasks.add_task(_run_processing, job_id, tenant, file_path)
+
+    return response
+
+
+@jobs_router.get("/{job_id}", response_model=UploadResponse)
+def get_job(job_id: str):
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    return job
+
+
+@jobs_router.get("", response_model=list[UploadResponse])
+def list_jobs(tenant: TenantEnum = None, status: JobStatus = None):
+    jobs = list(_jobs.values())
+    if tenant:
+        jobs = [j for j in jobs if j.tenant == tenant]
+    if status:
+        jobs = [j for j in jobs if j.status == status]
+    return sorted(jobs, key=lambda j: j.submitted_at, reverse=True)
