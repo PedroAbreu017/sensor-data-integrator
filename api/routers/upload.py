@@ -1,14 +1,16 @@
 import uuid
 import logging
+import asyncio
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict
 
-from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 
 from api.config import get_settings
 from api.models import TenantEnum, UploadResponse, JobStatus
+from core.message_broker import publish, QUEUES
 
 logger = logging.getLogger("integrator.router")
 
@@ -24,34 +26,8 @@ upload_router = APIRouter(prefix="/upload", tags=["integration"])
 jobs_router = APIRouter(prefix="/jobs", tags=["monitoring"])
 
 
-def _run_processing(job_id: str, tenant: TenantEnum, file_path: Path):
-    try:
-        _jobs[job_id].status = JobStatus.RUNNING
-
-        if tenant == TenantEnum.ORION:
-            from api.services.orion_service import OrionService
-            service = OrionService()
-        elif tenant == TenantEnum.NEXUS:
-            from api.services.nexus_service import NexusService
-            service = NexusService()
-        else:
-            from api.services.atlas_service import AtlasService
-            service = AtlasService()
-
-        result = service.process_file(file_path)
-        _jobs[job_id].status = JobStatus.DONE if not result.errors else JobStatus.FAILED
-        _jobs[job_id].result = result
-
-    except Exception as e:
-        logger.error(f"[{job_id}] Fatal error: {e}", exc_info=True)
-        _jobs[job_id].status = JobStatus.FAILED
-    finally:
-        shutil.rmtree(file_path.parent, ignore_errors=True)
-
-
 @upload_router.post("", response_model=UploadResponse, status_code=202)
 async def upload_file(
-    background_tasks: BackgroundTasks,
     tenant: TenantEnum = Form(...),
     file: UploadFile = File(...),
 ):
@@ -87,11 +63,19 @@ async def upload_file(
         tenant=tenant,
         environment=settings.app_env.value,
         status=JobStatus.PENDING,
-        message=f"'{file.filename}' received. Processing in background.",
+        message=f"'{file.filename}' received. Queued for processing.",
         submitted_at=datetime.now(timezone.utc),
     )
     _jobs[job_id] = response
-    background_tasks.add_task(_run_processing, job_id, tenant, file_path)
+
+    # Publish to RabbitMQ
+    queue_name = QUEUES[f"upload.{tenant.value.lower()}"]
+    await publish(queue_name, {
+        "job_id": job_id,
+        "tenant": tenant.value,
+        "file_path": str(file_path),
+        "filename": file.filename,
+    })
 
     return response
 
@@ -112,3 +96,10 @@ def list_jobs(tenant: TenantEnum = None, status: JobStatus = None):
     if status:
         jobs = [j for j in jobs if j.status == status]
     return sorted(jobs, key=lambda j: j.submitted_at, reverse=True)
+
+
+def update_job(job_id: str, status: JobStatus, result=None):
+    if job_id in _jobs:
+        _jobs[job_id].status = status
+        if result:
+            _jobs[job_id].result = result

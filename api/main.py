@@ -1,4 +1,6 @@
 import logging
+import asyncio
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -9,10 +11,20 @@ logging.basicConfig(
     format="%(asctime)s - [%(name)s] - %(levelname)s - %(message)s",
 )
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from core.worker import start_workers
+    task = asyncio.create_task(start_workers())
+    yield
+    task.cancel()
+
+
 app = FastAPI(
     title="Sensor Data Integrator",
     description="Multi-tenant service for ingesting, validating and routing industrial sensor data.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

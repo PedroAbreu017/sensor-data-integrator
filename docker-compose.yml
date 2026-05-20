@@ -18,6 +18,21 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+  
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: sensor-integrator-rabbitmq
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: integrator
+      RABBITMQ_DEFAULT_PASS: integrator123
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   api:
     build: .
